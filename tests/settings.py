@@ -52,7 +52,7 @@ CONSTANCE_ADDITIONAL_FIELDS = {
         'django.forms.fields.ChoiceField',
         {
             'widget': 'django.forms.Select',
-            'choices': ((None, "-----"), ("yes", "Yes"), ("no", "No"))
+            'choices': (("-----", None), ("yes", "Yes"), ("no", "No"))
         }
     ],
     # note this intentionally uses a tuple so that we can test immutable
@@ -64,7 +64,7 @@ CONSTANCE_CONFIG = {
     'LONG_VALUE': (long_value, 'some looong int'),
     'BOOL_VALUE': (True, 'true or false'),
     'STRING_VALUE': ('Hello world', 'greetings'),
-    'UNICODE_VALUE': (u'Rivière-Bonjour', 'greetings'),
+    'UNICODE_VALUE': (six.u('Rivière-Bonjour'), 'greetings'),
     'DECIMAL_VALUE': (Decimal('0.1'), 'the first release version'),
     'DATETIME_VALUE': (datetime(2010, 8, 23, 11, 29, 24),
                        'time of the first commit'),

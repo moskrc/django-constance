@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, date, time
 from decimal import Decimal
 import hashlib
@@ -5,21 +6,23 @@ from operator import itemgetter
 from collections import OrderedDict
 
 from django import forms, VERSION
-from django.apps import apps
 from django.conf.urls import url
 from django.contrib import admin, messages
 from django.contrib.admin import widgets
 from django.contrib.admin.options import csrf_protect_m
 from django.core.exceptions import PermissionDenied, ImproperlyConfigured
+from django.forms import CharField
+from django.forms import Textarea
 from django.forms import fields
+from django.forms.utils import flatatt
 from django.http import HttpResponseRedirect
 from django.template.response import TemplateResponse
 from django.utils import six
-from django.utils.encoding import smart_bytes
+from django.utils.encoding import smart_bytes, force_text
 from django.utils.formats import localize
+from django.utils.html import format_html
 from django.utils.module_loading import import_string
 from django.utils.translation import ugettext_lazy as _
-
 
 from . import LazyConfig, settings
 
@@ -34,7 +37,27 @@ STRING_LIKE = (fields.CharField, {
     'required': False,
 })
 
+class JsonWidget(Textarea):
+    def render(self, name, value, attrs=None):
+        if value is None:
+            value = {}
+        final_attrs = self.build_attrs(attrs, name=name)
+        return format_html('<textarea{}>\r\n{}</textarea>',
+                           flatatt(final_attrs),
+                           json.dumps(value))
+
+
+class SimpleJsonField(CharField):
+    def to_python(self, value):
+        "Returns a Unicode object."
+        if value in self.empty_values:
+            return ''
+        return json.loads(value)
+
+
 FIELDS = {
+    list: (SimpleJsonField, {'widget': JsonWidget(attrs={'rows': 1, 'class': 'json'}), 'required': False,}),
+    dict: (SimpleJsonField, {'widget': JsonWidget(attrs={'rows': 3, 'class': 'json'}), 'required': False,}),
     bool: (fields.BooleanField, {'required': False}),
     int: INTEGER_LIKE,
     Decimal: (fields.DecimalField, {'widget': NUMERIC_WIDGET}),
@@ -80,22 +103,6 @@ if not six.PY3:
     })
 
 
-def get_values():
-    """
-    Get dictionary of values from the backend
-    :return:
-    """
-
-    # First load a mapping between config name and default value
-    default_initial = ((name, options[0])
-                       for name, options in settings.CONFIG.items())
-    # Then update the mapping with actually values from the backend
-    initial = dict(default_initial,
-                   **dict(config._backend.mget(settings.CONFIG.keys())))
-
-    return initial
-
-
 class ConstanceForm(forms.Form):
     version = forms.CharField(widget=forms.HiddenInput)
 
@@ -103,17 +110,11 @@ class ConstanceForm(forms.Form):
         super(ConstanceForm, self).__init__(*args, initial=initial, **kwargs)
         version_hash = hashlib.md5()
 
+
         for name, options in settings.CONFIG.items():
             default, help_text = options[0], options[1]
-            if len(options) == 3:
+            if len(options) == 3 and options[2] in settings.ADDITIONAL_FIELDS:
                 config_type = options[2]
-                if config_type not in settings.ADDITIONAL_FIELDS and not isinstance(options[0], config_type):
-                    raise ImproperlyConfigured(_("Default value type must be "
-                                                 "equal to declared config "
-                                                 "parameter type. Please fix "
-                                                 "the default value of "
-                                                 "'%(name)s'.")
-                                               % {'name': name})
             else:
                 config_type = type(default)
 
@@ -128,6 +129,7 @@ class ConstanceForm(forms.Form):
             self.fields[name] = field_class(label=name, **kwargs)
 
             version_hash.update(smart_bytes(initial.get(name, '')))
+
         self.initial['version'] = version_hash.hexdigest()
 
     def save(self):
@@ -146,6 +148,12 @@ class ConstanceForm(forms.Form):
                                           'by someone else. Please reload the '
                                           'form and resubmit your changes.'))
         return value
+
+    class Media:
+        css = {
+            'all': ('constance/jsoneditor/jsoneditor.min.css','constance/css/theme.css'),
+        }
+        js = ('constance/jsoneditor/jsoneditor.min.js', 'constance/js/script.js' )
 
 
 class ConstanceAdmin(admin.ModelAdmin):
@@ -183,9 +191,17 @@ class ConstanceAdmin(admin.ModelAdmin):
 
     @csrf_protect_m
     def changelist_view(self, request, extra_context=None):
+        # First load a mapping between config name and default value
         if not self.has_change_permission(request, None):
             raise PermissionDenied
-        initial = get_values()
+        default_initial = (
+            (name, options[0]) for name, options in settings.CONFIG.items()
+        )
+        # Then update the mapping with actually values from the backend
+        initial = dict(
+            default_initial,
+            **dict(config._backend.mget(settings.CONFIG.keys()))
+        )
         form = self.change_list_form(initial=initial)
         if request.method == 'POST':
             form = self.change_list_form(data=request.POST, initial=initial)
@@ -197,16 +213,15 @@ class ConstanceAdmin(admin.ModelAdmin):
                     _('Live settings updated successfully.'),
                 )
                 return HttpResponseRedirect('.')
-        context = dict(
-            admin.site.each_context(request),
-            config_values=[],
-            title=self.model._meta.app_config.verbose_name,
-            app_label='constance',
-            opts=self.model._meta,
-            form=form,
-            media=self.media + form.media,
-            icon_type='gif' if VERSION < (1, 9) else 'svg',
-        )
+        context = {
+            'config_values': [],
+            'title': _('Constance config'),
+            'app_label': 'constance',
+            'opts': self.model._meta,
+            'form': form,
+            'media': self.media + form.media,
+            'icon_type': 'gif' if VERSION < (1, 9) else 'svg',
+        }
         for name, options in settings.CONFIG.items():
             context['config_values'].append(
                 self.get_config_value(name, options, form, initial)
@@ -265,10 +280,6 @@ class Config(object):
 
         def get_change_permission(self):
             return 'change_%s' % self.model_name
-
-        @property
-        def app_config(self):
-            return apps.get_app_config(self.app_label)
 
     _meta = Meta()
 
